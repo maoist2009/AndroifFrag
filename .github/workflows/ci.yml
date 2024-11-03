@@ -24,12 +24,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [ "Windows", "Android"]
+        target: [ "Android"]
         include:
-          - target: "Windows"
-            output-format: "app"
-            runs-on: "windows-latest"
-
           - target: "Android"
             output-format: "Gradle"
             runs-on: "ubuntu-latest"
