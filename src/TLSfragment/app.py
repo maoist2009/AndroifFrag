@@ -192,7 +192,7 @@ class GET_settings:
 
     def query(self,domain, todns=True):
         # print("Query:",domain)
-        res=domain_settings_tree.search(domain)
+        res=domain_settings_tree.search("^"+domain+"$")
         # print(domain,'-->',sorted(res,key=lambda x:len(x),reverse=True)[0])
         try:
             res=copy.deepcopy(domain_settings.get(sorted(res,key=lambda x:len(x),reverse=True)[0]))
@@ -307,6 +307,7 @@ class ThreadedServer(object):
             thread_up = threading.Thread(target = self.my_upstream , args =(client_sock,) )
             thread_up.daemon = True   #avoid memory leak by telling os its belong to main program , its not a separate program , so gc collect it when thread finish
             thread_up.start()
+        self.sock.close()
     
 
 
@@ -483,8 +484,8 @@ class ThreadedServer(object):
                 backend_sock.close()
                 return False
 
-            client_sock.close()
-            backend_sock.close()
+        client_sock.close()
+        backend_sock.close()
 
             
     def my_downstream(self, backend_sock , client_sock, settings):
@@ -517,6 +518,7 @@ class ThreadedServer(object):
                 backend_sock.close()
                 client_sock.close()
                 return False
+
         client_sock.close()
         backend_sock.close()
 
@@ -1104,21 +1106,24 @@ class TLSfragment(toga.App):
         """
         dataPath=self.paths.data
 
-        main_box = toga.Box()
+        main_box = toga.Box(style=Pack(direction=COLUMN))
 
         self.main_window = toga.MainWindow(title=self.formal_name)
         self.main_window.content = main_box
         self.main_window.show()
 
-        
+        self.BXopt=toga.Box(style=Pack(direction=ROW))
         self.BTsaveconfig=toga.Button('Save', on_press=self.save_config, style=Pack(padding=5))
-        main_box.add(self.BTsaveconfig)
+        self.BXopt.add(self.BTsaveconfig)
         self.BTserver=toga.Button('Start', on_press=self.start_proxy, style=Pack(padding=5))
-        main_box.add(self.BTserver)
+        self.BXopt.add(self.BTserver)
+        main_box.add(self.BXopt)
+        self.BXdel=toga.Box(style=Pack(direction=ROW))
         self.BTdeldnscache=toga.Button('Delete DNS Cache', on_press=self.delete_dns_cache, style=Pack(padding=5))
-        main_box.add(self.BTdeldnscache)
+        self.BXdel.add(self.BTdeldnscache)
         self.BTdelttlcache=toga.Button('Delete TTL Cache', on_press=self.delete_ttl_cache, style=Pack(padding=5))
-        main_box.add(self.BTdelttlcache)
+        self.BXdel.add(self.BTdelttlcache)
+        main_box.add(self.BXdel)
 
 
         self.EDconfig=toga.MultilineTextInput(readonly=False, style=Pack(flex=1))
@@ -1174,6 +1179,7 @@ class TLSfragment(toga.App):
         ThreadtoWork=False
         while(proxythread.is_alive()):
             pass
+        
         
         self.BTdeldnscache.enabled=True
         self.BTdelttlcache.enabled=True
