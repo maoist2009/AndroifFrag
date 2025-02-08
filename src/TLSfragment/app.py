@@ -7,7 +7,6 @@ from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
 import toga.paths
 
-#!/usr/bin/env python3
 from pathlib import Path
 import socket
 import requests
@@ -77,6 +76,8 @@ cnt_dns_chg = 0
 cnt_ttl_chg = 0
 lock_DNS_cache = threading.Lock()
 lock_TTL_cache = threading.Lock()
+pac_domains = []
+pacfile="function genshin(){}"
 
 def set_ttl(sock,ttl):
     if sock.family==socket.AF_INET6:
@@ -308,16 +309,20 @@ class ThreadedServer(object):
             thread_up.daemon = True   #avoid memory leak by telling os its belong to main program , its not a separate program , so gc collect it when thread finish
             thread_up.start()
         self.sock.close()
-    
-
 
     def handle_client_request(self,client_socket):
         # Receive the CONNECT request from the client
-        data = client_socket.recv(16384)
-        
+        data = client_socket.recv(16384)        
 
         if(data[:7]==b'CONNECT'):            
-            server_name , server_port = self.extract_servername_and_port(data)            
+            server_name , server_port = self.extract_servername_and_port(data)      
+        elif (data[:3]==b'GET' and str(data).split('\r\n')[0].split(' ')[1]=="/proxy.pac"):      
+            # return pacfile
+            response_data = 'HTTP/1.1 200 OK\r\nContent-Type: application/x-ns-proxy-autoconfig\r\nContent-Length: '+str(len(pacfile))+'\r\n\r\n'+pacfile   
+            
+            client_socket.sendall(response_data.encode())
+            client_socket.close()
+            return None, {}
         elif( (data[:3]==b'GET') 
             or (data[:4]==b'POST') 
             or (data[:4]==b'HEAD')
@@ -1026,12 +1031,142 @@ def send_data_with_fake(sni, settings, data , sock):
 
 serverHandle=None
 
-dataPath=None
+def generate_PAC():
+    global pac_domains,pacfile
+    pacfile="""class TrieNode {
+    constructor(value){
+        this.value = value;
+        this.num=1;
+        this.deep=0;
+        this.son=[];
+        this.isEnd=false;
+    }
+    findNode(value){
+        for(let i=0;i<this.son.length;i++){
+            const node=this.son[i]
+            if(node.value == value){
+                return node;
+            }
+        }
+        return null;
+    }
+}
+class Trie {
+    constructor(){
+        this.root=new TrieNode(null);
+        this.size=1;
+    }
+    insert(str){
+        let node=this.root;
+        for(let c of str){
+            let snode = node.findNode(c);
+            if(snode==null){
+                snode=new TrieNode(c)
+                snode.deep=node.deep+1;
+                node.son.push(snode);
+            }else{
+                snode.num++;
+            }
+            node=snode;
+ 
+        }
+        
+        if (!node.isEnd) {
+            this.size++;
+            node.isEnd = true;
+        }
+    }
+    has(str){
+        let node=this.root;
+        for(let c of str){
+            const snode=node.findNode(c)
+            if(snode){
+                node=snode;
+            }else{
+                return false;
+            }
+        }
+        return node.isEnd;
+    }
+}
+
+let tr=null;
+function BuildAutomatom(arr) {
+	
+    tr=new Trie()
+    arr.forEach(function (item) {
+        tr.insert(item)
+    })
+	
+    root=tr.root;
+    root.fail=null;
+    const queue=[root]
+    let i=0;
+    while(i<queue.length){
+        const temp=queue[i];
+        for(let j=0;j<temp.son.length;j++){
+            const node=temp.son[j]
+            if(temp===root){
+                node.fail=root;
+            }else{
+                node.fail=temp.fail.findNode(node.value)||root;
+            }
+            queue.push(node);
+        }
+        i++
+    }
+}
+
+function MatchAutomatom(str) {
+	let node=tr.root;
+    const data=[];
+    for(let i=0;i<str.length;i++){
+ 
+        let cnode=node.findNode(str[i])
+        while(!cnode&&node!==tr.root){
+            node=node.fail;
+ 
+            cnode=node.findNode(str[i])
+        }
+        if(cnode){
+            node=cnode;
+        }
+        if(node.isEnd){
+            data.push({
+                start:i+1-node.deep,
+                len:node.deep,
+                str:str.substr(i+1-node.deep,node.deep),
+                num:node.num,
+            })
+        }
+    }
+    return data;
+}
+
+"""
+    pacfile=pacfile+'let domains=[];\n'
+	
+    for line in pac_domains:
+        pacfile=pacfile+'domains.push("'
+        pacfile=pacfile+line
+        pacfile=pacfile+'");\n'
+	
+    pacfile=pacfile+'BuildAutomatom(domains);\n'
+	
+    pacfile=pacfile+"""function FindProxyForURL(url, host) {
+	if(MatchAutomatom("^"+host+"$").length)
+ 		return "PROXY 127.0.0.1:"""
+    pacfile=pacfile+str(listen_PORT)
+    pacfile=pacfile+"""";
+	else
+		return "DIRECT";
+}
+"""
 
 def start_server():
     global dataPath
     with dataPath.joinpath("config.json").open(mode='r', encoding='UTF-8') as f:
-        global output_data,my_socket_timeout,FAKE_ttl_auto_timeout,listen_PORT,DOH_PORT,num_TCP_fragment,num_TLS_fragment,TCP_sleep,TCP_frag,TLS_frag,doh_server,domain_settings,DNS_log_every,TTL_log_every,IPtype,method,FAKE_packet,FAKE_ttl,FAKE_sleep,domain_settings_tree
+        global output_data,my_socket_timeout,FAKE_ttl_auto_timeout,listen_PORT,DOH_PORT,num_TCP_fragment,num_TLS_fragment,TCP_sleep,TCP_frag,TLS_frag,doh_server,domain_settings,DNS_log_every,TTL_log_every,IPtype,method,FAKE_packet,FAKE_ttl,FAKE_sleep,domain_settings_tree,pac_domains
         print("Now listening at: 127.0.0.1:"+str(listen_PORT))
         config = json.load(f)
         output_data=config.get("output_data")
@@ -1055,10 +1190,11 @@ def start_server():
         FAKE_packet=config.get("FAKE_packet").encode(encoding='UTF-8')
         FAKE_ttl=config.get("FAKE_ttl")
         FAKE_sleep=config.get("FAKE_sleep")
+        pac_domains=config.get("pac_domains")
         if FAKE_ttl=="auto":
             # temp code for auto fake_ttl
             FAKE_ttl=random.randint(10,60)
-
+        generate_PAC()
         # print(set(domain_settings.keys()))
         domain_settings_tree=ahocorasick.AhoCorasick(*domain_settings.keys())
 
@@ -1080,8 +1216,13 @@ def start_server():
     serverHandle = ThreadedServer('',listen_PORT).listen()
 
 def stop_server():
-    global serverHandle
-    del serverHandle
+    global ThreadtoWork,proxythread
+    ThreadtoWork=False
+    sock=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect(('127.0.0.1',listen_PORT))
+    sock.close()
+    while(proxythread.is_alive()):
+        pass
 
 def Write_DNS_cache():
     global DNS_cache,dataPath
@@ -1106,28 +1247,52 @@ class TLSfragment(toga.App):
         """
         dataPath=self.paths.data
 
-        main_box = toga.Box(style=Pack(direction=COLUMN))
+        self.main_box = toga.Box(style=Pack(direction=COLUMN))
+
 
         self.main_window = toga.MainWindow(title=self.formal_name)
-        self.main_window.content = main_box
+        self.main_window.content = self.main_box
         self.main_window.show()
+
+        self.BBXmenu=toga.Box(style=Pack(direction=ROW))
+        self.BBXserver=toga.Box(style=Pack(direction=COLUMN,flex=1))
+        self.BBXWeb=toga.Box(style=Pack(direction=COLUMN,flex=1))
+        
+        self.BTchg=toga.Button('WebView', on_press=self.show_change, style=Pack(padding=5))
+        self.BBXmenu.add(self.BTchg)
+
+        self.BXurl=toga.Box(style=Pack(direction=ROW))
+        self.EDurl=toga.TextInput(readonly=False, style=Pack(flex=1))
+        self.EDurl.placeholder='https://example.com'
+        self.EDurl.value='https://cn.bing.com/ncr'
+        self.BXurl.add(self.EDurl)
+        self.BTurl=toga.Button('Go', on_press=self.go_url, style=Pack(padding=0))
+        self.BXurl.add(self.BTurl)
+        self.BBXWeb.add(self.BXurl)
+
+        self.WBview=toga.WebView(style=Pack(flex=1))
+        self.BBXWeb.add(self.WBview)
+        
+        self.main_box.add(self.BBXmenu)
 
         self.BXopt=toga.Box(style=Pack(direction=ROW))
         self.BTsaveconfig=toga.Button('Save', on_press=self.save_config, style=Pack(padding=5))
         self.BXopt.add(self.BTsaveconfig)
         self.BTserver=toga.Button('Start', on_press=self.start_proxy, style=Pack(padding=5))
         self.BXopt.add(self.BTserver)
-        main_box.add(self.BXopt)
+        self.BBXserver.add(self.BXopt)
         self.BXdel=toga.Box(style=Pack(direction=ROW))
         self.BTdeldnscache=toga.Button('Delete DNS Cache', on_press=self.delete_dns_cache, style=Pack(padding=5))
         self.BXdel.add(self.BTdeldnscache)
         self.BTdelttlcache=toga.Button('Delete TTL Cache', on_press=self.delete_ttl_cache, style=Pack(padding=5))
         self.BXdel.add(self.BTdelttlcache)
-        main_box.add(self.BXdel)
+        self.BBXserver.add(self.BXdel)
 
 
         self.EDconfig=toga.MultilineTextInput(readonly=False, style=Pack(flex=1))
-        main_box.add(self.EDconfig)
+        self.BBXserver.add(self.EDconfig)
+
+        self.main_box.add(self.BBXserver)
         # self.BTstop=toga.Button('Stop', on_press=self.stop_proxy, style=Pack(padding=5))
 
         # print(self.paths.config)
@@ -1177,6 +1342,10 @@ class TLSfragment(toga.App):
         self.BTserver.enabled=False
         global ThreadtoWork
         ThreadtoWork=False
+        sock=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect(('127.0.0.1',listen_PORT))
+        sock.send(b"CONNECT")
+        sock.close()
         while(proxythread.is_alive()):
             pass
         
@@ -1196,6 +1365,19 @@ class TLSfragment(toga.App):
             self.paths.data.joinpath('config.json').write_text(self.EDconfig.value)
         except Exception as e:
             print(f'Failed to write config file: {e}')
+    
+    def show_change(self, widget):
+        if self.BTchg.text=='WebView':
+            self.main_box.remove(self.BBXserver)
+            self.main_box.add(self.BBXWeb)
+            self.BTchg.text='Browser'
+        else:
+            self.main_box.remove(self.BBXWeb)
+            self.main_box.add(self.BBXserver)
+            self.BTchg.text='WebView'
+
+    def go_url(self, widget):
+        self.WBview.load_url(self.EDurl.value)
             
 
 
