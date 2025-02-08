@@ -1254,28 +1254,31 @@ class TLSfragment(toga.App):
         self.main_window.content = self.main_box
         self.main_window.show()
 
-        self.BBXmenu=toga.Box(style=Pack(direction=ROW))
         self.BBXserver=toga.Box(style=Pack(direction=COLUMN,flex=1))
         self.BBXWeb=toga.Box(style=Pack(direction=COLUMN,flex=1))
         
-        self.BTchg=toga.Button('WebView', on_press=self.show_change, style=Pack(padding=5))
-        self.BBXmenu.add(self.BTchg)
+        self.BTchgserver=toga.Button('WebView', on_press=self.show_change, style=Pack(padding=5))
+        self.BTchgweb   =toga.Button('Server', on_press=self.show_change, style=Pack(padding=0))
+        self.BBXWeb.add(self.BTchgweb)
+        self.guimode="Server"
 
         self.BXurl=toga.Box(style=Pack(direction=ROW))
-        self.EDurl=toga.TextInput(readonly=False, style=Pack(flex=1))
+        self.BXurl.add(self.BTchgweb)
+        self.EDurl=toga.TextInput(readonly=False, style=Pack(flex=1,font_size=18))
         self.EDurl.placeholder='https://example.com'
         self.EDurl.value='https://cn.bing.com/ncr'
         self.BXurl.add(self.EDurl)
         self.BTurl=toga.Button('Go', on_press=self.go_url, style=Pack(padding=0))
         self.BXurl.add(self.BTurl)
+
         self.BBXWeb.add(self.BXurl)
 
         self.WBview=toga.WebView(style=Pack(flex=1))
         self.BBXWeb.add(self.WBview)
         
-        self.main_box.add(self.BBXmenu)
 
         self.BXopt=toga.Box(style=Pack(direction=ROW))
+        self.BXopt.add(self.BTchgserver)
         self.BTsaveconfig=toga.Button('Save', on_press=self.save_config, style=Pack(padding=5))
         self.BXopt.add(self.BTsaveconfig)
         self.BTserver=toga.Button('Start', on_press=self.start_proxy, style=Pack(padding=5))
@@ -1367,14 +1370,14 @@ class TLSfragment(toga.App):
             print(f'Failed to write config file: {e}')
     
     def show_change(self, widget):
-        if self.BTchg.text=='WebView':
+        if self.guimode=='WebView':
             self.main_box.remove(self.BBXserver)
             self.main_box.add(self.BBXWeb)
-            self.BTchg.text='Browser'
+            self.guimode='Server'
         else:
             self.main_box.remove(self.BBXWeb)
             self.main_box.add(self.BBXserver)
-            self.BTchg.text='WebView'
+            self.guimode='WebView'
 
     def go_url(self, widget):
         self.WBview.load_url(self.EDurl.value)
