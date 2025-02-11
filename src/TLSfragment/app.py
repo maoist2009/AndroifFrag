@@ -11,7 +11,7 @@ DefaultConfig="""{
     "TCP_frag": 4,
     "TCP_sleep": 0.01,
     "TLS_frag": 4,
-    "FAKE_packet": "GET / HTTP/1.1\r\nHost: www.baidu.com\r\n\r\n",
+    "FAKE_packet": "GET / HTTP/1.1\\r\\nHost: www.baidu.com\\r\\n\\r\\n",
     "FAKE_ttl": "query",
     "FAKE_sleep": 0.1,
     "my_socket_timeout": 180,
