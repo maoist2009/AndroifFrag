@@ -10,8 +10,11 @@ author_email = "maoist2009@outlook.com"
 
 [tool.briefcase.app.TLSfragment]
 formal_name = "TLSfragment"
-description = "Fragment TLS clinet hello to bypass GFW. This is gui for win and android. "
-long_description = """More details about the app should go here.
+description = "Fragment TLS clinet hello to bypass GFW. This is gui for  android. "
+long_description = """目前最简单的配置流程大致如下：安装包也附带了一个PDF操作指南：
+1. 配置config
+2. 取消电池优化+悬浮窗后台保活
+3. 设置HTTP代理
 """
 sources = [
     "src/TLSfragment",

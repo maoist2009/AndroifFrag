@@ -34,7 +34,7 @@ FAKE_ttl_auto_timeout = 1
 first_time_sleep = 0.1 # speed control , avoid server crash if huge number of users flooding
 accept_time_sleep = 0.01 # avoid server crash on flooding request -> max 100 sockets per second
 output_data=True
-
+datapath=Path()
 
 domain_settings={
     "null": {
@@ -79,11 +79,99 @@ lock_TTL_cache = threading.Lock()
 pac_domains = []
 pacfile="function genshin(){}"
 
+def ip_to_binary_prefix(ip_or_network):
+    try:
+        network = ipaddress.ip_network(ip_or_network, strict=False)
+        network_address = network.network_address
+        prefix_length = network.prefixlen
+        if isinstance(network_address, ipaddress.IPv4Address):
+            binary_network = bin(int(network_address))[2:].zfill(32)
+        elif isinstance(network_address, ipaddress.IPv6Address):
+            binary_network = bin(int(network_address))[2:].zfill(128)
+        binary_prefix = binary_network[:prefix_length]
+        return binary_prefix
+    except ValueError:
+        try:
+            ip = ipaddress.ip_address(ip_or_network)
+            if isinstance(ip, ipaddress.IPv4Address):
+                binary_ip = bin(int(ip))[2:].zfill(32)
+                binary_prefix = binary_ip[:32]
+            elif isinstance(ip, ipaddress.IPv6Address):
+                binary_ip = bin(int(ip))[2:].zfill(128)
+                binary_prefix = binary_ip[:128]
+            return binary_prefix
+        except ValueError:
+            raise ValueError(f"输入 {ip_or_network} 不是有效的 IP 地址或网络")
+
+class TrieNode:
+    def __init__(self):
+        self.children = [None, None]
+        self.val = None
+
+
+class Trie:
+    def __init__(self):
+        self.root = TrieNode()
+
+    def insert(self, prefix, value):
+        node = self.root
+        for bit in prefix:
+            index = int(bit)
+            if not node.children[index]:
+                node.children[index] = TrieNode()
+            node = node.children[index]
+        node.val = value
+
+    def search(self, prefix):
+        node = self.root
+        ans = None
+        for bit in prefix:
+            index = int(bit)
+            if node.val!=None:
+                ans=node.val
+            if not node.children[index]:
+                return ans
+            node = node.children[index]
+        return ans
+
+ipv4trie=Trie()
+ipv6trie=Trie()
+
 def set_ttl(sock,ttl):
     if sock.family==socket.AF_INET6:
         sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_UNICAST_HOPS, ttl)
     else:
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
+
+def tryipredirect(ip):
+    ans=""
+    if ip.find(":")!=-1:
+        ans=ipv6trie.search(ip_to_binary_prefix(ip))
+        if ans==None:
+            return ip
+        else:
+            return ans
+    else:
+        ans=ipv4trie.search(ip_to_binary_prefix(ip))
+        if ans==None:
+            return ip
+        else:
+            return ans
+
+def IPredirect(ip):
+    while True:
+        ans=tryipredirect(ip)
+        if ans==ip:
+            break
+        elif ans[0]=="^":
+            print(f"IPredirect {ip} to {ans[1:]}")
+            ip=ans[1:]
+            break
+        else:
+            print(f"IPredirect {ip} to {ans}")
+            ip=ans
+
+    return ip
 
 def check_ttl(ip,port,ttl):
     # print(ip,port,ttl)
@@ -210,14 +298,14 @@ class GET_settings:
                 else:
                     res["IP"]=self.query_DNS(domain,res)
                     if res["IP"]==None:
-                        print("Faild to resolve domain, try again with other IP type")
+                        print("Failed to resolve domain, try again with other IP type")
                         if res["IPtype"]=="ipv6":                        
                             res["IPtype"]="ipv4"
                         elif res["IPtype"]=="ipv4":
                             res["IPtype"]="ipv6"
                         res["IP"]=self.query_DNS(domain,res)
                     lock_DNS_cache.acquire()
-                    global cnt_dns_chg
+                    global cnt_dns_chg,dataPath
                     cnt_dns_chg=cnt_dns_chg+1
                     if cnt_dns_chg>=DNS_log_every:
                         cnt_dns_chg=0
@@ -225,6 +313,8 @@ class GET_settings:
                         with dataPath.joinpath("DNS_cache.json").open('w', encoding='UTF-8') as f:
                             json.dump(DNS_cache,f)
                     lock_DNS_cache.release()
+
+                res["IP"]=IPredirect(res.get("IP"))
                 # res["IP"]="127.0.0.1"
         else:
             res["IP"]=todns
@@ -461,6 +551,12 @@ class ThreadedServer(object):
                             send_data_in_fragment(settings.get("sni"),settings,data,backend_sock)
                         elif settings.get("method")=="FAKEdesync":
                             send_data_with_fake(settings.get("sni"),settings,data,backend_sock)
+                        elif settings.get("method")=="DIRECT":
+                            backend_sock.sendall(data)
+                        elif settings.get("method")=="GFWlike":
+                            client_sock.close()
+                            backend_sock.close()
+                            return False
                         else:
                             print("unknown method")
                             backend_sock.sendall(data)
@@ -767,7 +863,7 @@ try:
         # kernel32._get_osfhandle.argtypes = [wintypes.INT]
         # kernel32._get_osfhandle.restype = wintypes.HANDLE
         pass
-    elif platform.system() == "Linux" or platform.system() == "Darwin" or platform.system() == "Android":
+    elif platform.system() in ('Linux', 'Darwin', 'Android'):
         import os
         import ctypes
         # 加载 libc 库
@@ -934,7 +1030,7 @@ def send_fake_data(data_len,fake_data,fake_ttl,real_data,default_ttl,sock,FAKE_s
                 os.remove(file_path)
         except Exception as e:
             raise e
-    elif platform.system() == "Linux" or platform.system() == "Darwin" or platform.system() == "Android":
+    elif platform.system() in ('Linux', 'Darwin', 'Android'):
         try:
             sock_file_descriptor = sock.fileno()
             print("sock file discriptor:",sock_file_descriptor)
@@ -1167,6 +1263,7 @@ def start_server():
     global dataPath
     with dataPath.joinpath("config.json").open(mode='r', encoding='UTF-8') as f:
         global output_data,my_socket_timeout,FAKE_ttl_auto_timeout,listen_PORT,DOH_PORT,num_TCP_fragment,num_TLS_fragment,TCP_sleep,TCP_frag,TLS_frag,doh_server,domain_settings,DNS_log_every,TTL_log_every,IPtype,method,FAKE_packet,FAKE_ttl,FAKE_sleep,domain_settings_tree,pac_domains
+        global ipv4trie,ipv6trie
         print("Now listening at: 127.0.0.1:"+str(listen_PORT))
         config = json.load(f)
         output_data=config.get("output_data")
@@ -1191,12 +1288,18 @@ def start_server():
         FAKE_ttl=config.get("FAKE_ttl")
         FAKE_sleep=config.get("FAKE_sleep")
         pac_domains=config.get("pac_domains")
+        IPredirect=config.get("IPredirect")
         if FAKE_ttl=="auto":
             # temp code for auto fake_ttl
             FAKE_ttl=random.randint(10,60)
         generate_PAC()
         # print(set(domain_settings.keys()))
-        domain_settings_tree=ahocorasick.AhoCorasick(*domain_settings.keys())
+        domain_settings_tree= ahocorasick.AhoCorasick(*domain_settings.keys())
+        for key in IPredirect.keys():
+            if key.find(":")!=-1:
+                ipv6trie.insert(ip_to_binary_prefix(key),IPredirect[key])
+            else:
+                ipv4trie.insert(ip_to_binary_prefix(key),IPredirect[key])
 
     try:
         global DNS_cache
@@ -1234,6 +1337,467 @@ def Write_TTL_cache():
     with dataPath.joinpath("TTL_cache.json").open(mode='w', encoding='UTF-8') as f:
         json.dump(TTL_cache,f)
 
+DefaultConfig="""{
+    "output_data": false,
+    "listen_PORT": 2500,
+    "DOH_PORT": 2500,
+    "num_TCP_fragment": 3,
+    "num_TLS_fragment": 2,
+    "TCP_frag": 4,
+    "TCP_sleep": 0.01,
+    "TLS_frag": 4,
+    "FAKE_packet": "GET / HTTP/1.1\r\nHost: www.baidu.com\r\n\r\n",
+    "FAKE_ttl": "query",
+    "FAKE_sleep": 0.1,
+    "my_socket_timeout": 180,
+    "FAKE_ttl_auto_timeout": 2,
+    "doh_server": "https://cloudflare-dns.com/dns-query?dns=",
+    "DNS_log_every": 5,
+    "TTL_log_every": 1,
+    "method": "TLSfrag",
+    "IPtype": "ipv4",
+    "IPredirect": {
+        "104.16.0.0/13": "104.21.57.162",
+        "104.24.0.0/14": "^104.19.229.21",
+        "172.64.0.0/13": "^104.21.3.225",
+        "162.158.0.0/15": "^104.21.3.226",
+        "2606:4700::/32": "^104.21.57.162",
+        "2400:cb00::/32": "^104.19.229.21"
+    },
+    "domains": {
+        "annas-archive.org": {},
+        "codesandbox.io": {
+            "IP": "104.21.3.227"
+        },
+        "stackblitz.com": {
+            "IP": "13.32.27.56"
+        },
+        "giscus.app": {
+            "method": "FAKEdesync"
+        },
+        "bbc.com": {
+            "IP": "146.75.36.81"
+        },
+        "steampowered.com": {
+            "IP": "23.202.181.157"
+        },
+        "api.steampowered.com": {
+            "IP": "184.85.112.102"
+        },
+        "login.steampowered.com": {
+            "IP": "23.199.145.239"
+        },
+        "quora": {
+            "IP": "104.21.3.225",
+            "TLS_frag": 3
+        },
+        "copilot.microsoft.com": {
+            "IP": "2.17.22.191"
+        },
+        "onedrive.live.com": {
+            "IP": "150.171.43.11",
+            "method": "FAKEdesync"
+        },
+        "skyapi.onedrive.live.com": {
+            "IP": "13.107.42.12",
+            "method": "FAKEdesync"
+        },
+        "vercel.app": {
+            "IP": "64.29.17.1",
+            "method": "FAKEdesync"
+        },
+        "cloudflare.com": {
+            "IP": "104.21.3.226"
+        },
+        "cn.nytimes.com": {},
+        "nytimes.com": {
+            "IP": "199.232.137.164"
+        },
+        "purr.nytimes.com": {},
+        "et.nytimes.com": {},
+        "nyt.com": {
+            "IP": "199.232.137.164"
+        },
+        "pornhub.com": {
+            "IP": "216.18.168.16"
+        },
+        "help.pornhub.com": {},
+        "web.archive.org": {
+            "IP": "207.241.237.3"
+        },
+        "archive.org": {
+            "IP": "207.241.225.120"
+        },
+        "www.archive.org": {
+            "IP": "207.241.225.120"
+        },
+        ".archive.org": {},
+        "pages.dev": {
+            "IP": "172.66.44.87"
+        },
+        "reddit": {
+            "IP": "146.75.37.140",
+            "TLS_frag": 3,
+            "TCP_frag": 5
+        },
+        "redd.it": {
+            "IP": "146.75.37.140",
+            "TLS_frag": 3,
+            "TCP_frag": 5
+        },
+        "github.com": {
+            "IP": "20.27.177.113",
+            "TLS_frag": 3,
+            "TCP_frag": 5
+        },
+        "api.github.com": {
+            "IP": "20.27.177.116",
+            "TLS_frag": 3,
+            "TCP_frag": 5
+        },
+        "alive.github.com": {
+            "IP": "140.82.112.26",
+            "TLS_frag": 3,
+            "TCP_frag": 5
+        },
+        "github.io": {
+            "IP": "151.101.153.147"
+        },
+        "githubusercontent.com": {
+            "IP": "151.101.152.133"
+        },
+        "objects-origin.githubusercontent.com": {
+            "IP": "140.82.113.22"
+        },
+        "wiki": {
+            "IP": "185.15.58.224",
+            "TLS_frag": 2,
+            "TCP_frag": 3,
+            "num_TCP_fragment": 3,
+            "num_TLS_fragment": 3,
+            "TCP_sleep": 0.01
+        },
+        "upload.wikimedia.org": {
+            "IP": "185.15.58.240"
+        },
+        "wiktionary.org": {
+            "IP": "185.15.59.224"
+        },
+        "pixiv": {
+            "TLS_frag": 3
+        },
+        "chrome.com": {
+            "IP": "35.190.247.148",
+            "port": 1445
+        },
+        "chromium.org": {
+            "IP": "35.190.247.148",
+            "port": 1445
+        },
+        ".google$": {
+            "IP": "35.190.247.150",
+            "port": 1445
+        },
+        "deepmind.google": {},
+        "google.com": {
+            "IP": "35.190.247.148",
+            "port": 1445
+        },
+        "android.com": {
+            "IP": "35.190.247.145",
+            "port": 1445
+        },
+        "googlevideo.com": {
+            "IPtype": "ipv6"
+        },
+        "googleusercontent.com": {
+            "IP": "4.193.121.119",
+            "port": 41620
+        },
+        ".translate.goog": {
+            "IP": "4.193.121.119",
+            "port": 41620
+        },
+        "ggpht.com": {
+            "IP": "4.193.121.119",
+            "port": 41620
+        },
+        "gstatic.com": {
+            "IP": "35.190.247.147",
+            "port": 1445
+        },
+        "googleapis.com": {
+            "IP": "35.190.247.147",
+            "port": 1445
+        },
+        "youtube.com": {
+            "IP": "35.190.247.147",
+            "port": 1445
+        },
+        "youtu.be": {
+            "IP": "35.190.247.147",
+            "port": 1445
+        },
+        "kstatic.googleusercontent.com": {
+            "IP": "35.241.11.240"
+        },
+        "ytimg.com": {
+            "IP": "4.193.121.119",
+            "port": 41620
+        },
+        "facebook.com": {
+            "IP": "157.240.229.35",
+            "TLSfrag": 3,
+            "TCPfrag": 5
+        },
+        "www.instagram.com": {
+            "IP": "2a03:2880:f276:e8:face:b00c:0:4420"
+        },
+        "meta": {
+            "TLS_frag": 2,
+            "TCP_frag": 3,
+            "TCP_sleep": 0.01
+        },
+        "static.cdninstagram.com": {
+            "IP": "2a03:2880:f276:d2:face:b00c:0:43fe"
+        },
+        "static.xx.fbcdn.net": {
+            "IP": "157.240.229.35",
+            "TLS_frag": 3,
+            "TCP_frag": 5
+        },
+        "fbcdn.net": {
+            "IPtype": "ipv6"
+        },
+        "fbsbx.com": {
+            "IP": "2a03:2880:f115:83:face:b00c:0:25de",
+            "TLS_frag": 3,
+            "TCP_frag": 5
+        },
+        "dropbox.com": {
+            "IP": "162.125.2.18"
+        },
+        "www.dropbox.com": {
+            "IP": "162.125.2.18"
+        },
+        ".dropbox.com": {},
+        "telegram.org": {
+            "IP": "2001:67c:4e8:f004::8"
+        },
+        "telegram.me": {
+            "IP": "2001:67c:4e8:f004::8"
+        },
+        "t.me": {
+            "IP": "2001:67c:4e8:f004::8",
+            "TLS_frag": 1,
+            "num_TCP_fragment": 3,
+            "num_TLS_fragment": 5,
+            "TCP_frag": 2
+        },
+        "medium": {},
+        "cdn-telegram.org": {
+            "IPtype": "ipv4"
+        },
+        "zws5.web.telegram.org": {
+            "IP": "149.154.170.200"
+        },
+        "zws5-1.web.telegram.org": {
+            "IP": "149.154.170.200"
+        },
+        "pluto.web.telegram.org": {
+            "IP": "2001:b28:f23d:8007::805:532"
+        },
+        "aurora.web.telegram.org": {
+            "IP": "2001:b28:f23d:8007::805:532"
+        },
+        "xcannel.com": {
+            "IP": "198.98.60.34"
+        },
+        "cdn.xcannel.com": {
+            "IP": "129.80.246.62"
+        },
+        "video.twimg.com": {
+            "CDN": "Fastly: 2024/11/13: 151.101.40.158",
+            "TCP_frag": 8,
+            "IPcache": false
+        },
+        "twimg.com": {
+            "IP": "146.75.72.157",
+            "TLS_frag": 4
+        },
+        "x.com": {
+            "IP": "104.18.38.25",
+            "TCP_frag": 5,
+            "TCP_sleep": 0.02,
+            "TLS_frag": 2
+        },
+        "platform.twitter.com": {
+            "IP": "146.75.120.157",
+            "TLS_frag": 4
+        },
+        "twitter.com": {
+            "IP": "104.18.38.25",
+            "TLS_frag": 4
+        },
+        "video.pscp.tv": {
+            "IP": "146.75.34.164",
+            "TLS_frag": 9,
+            "IPcache": false
+        },
+        "one.one.one.one": {
+            "IP": "104.21.3.221",
+            "TLS_frag": 4
+        },
+        "nav-edge.smartscreen.microsoft.com": {
+            "IP": "0.0.0.0",
+            "TLS_frag": 4
+        },
+        "cloudflare-dns.com": {
+            "IP": "104.21.3.222",
+            "TLS_frag": 6
+        },
+        "tracking.miui.com": {
+            "method": "GFWlike"
+        },
+        "bilibili.com": {
+            "method": "DIRECT"
+        }
+    },
+    "pac_domains": [
+        "google$",
+        "uptodown.com$",
+        "fosstodon.org$",
+        "smsactivate.s3.eu-central-1.amazonaws.com$",
+        "android.com$",
+        "readthedocs.io$",
+        "sleazyfork.org$",
+        "greasyfork.org$",
+        "codesandbox.io$",
+        "wikiquote.org$",
+        "wikisource.org$",
+        "indieweb.social$",
+        "mov.im$",
+        "stackblitz.com$",
+        "bbc.co.uk$",
+        "economist.com$",
+        "conversations.im$",
+        "611study.icu$",
+        "xmpp.jp$",
+        "cmx.im$",
+        "cmlmuf.top$",
+        "hack.chat$",
+        "laborinfocn6.com$",
+        "annas-archive.org$",
+        "ci-ic.org$",
+        "opkode.com$",
+        "f-droid.org$",
+        "protonvpn.com$",
+        "archive.ph$",
+        "lsepcn.com$",
+        "patreon.com$",
+        "conversejs.org$",
+        "notion.site$",
+        "go.dev$",
+        "golang.org$",
+        "chromium.org$",
+        "cloudflare.com$",
+        "bootstrapcdn.com$",
+        "apkmirror.com$",
+        "giscus.app$",
+        "medium.com$",
+        "suno.com$",
+        "quoracdn.net$",
+        "quora.com$",
+        "onedrive.live.com$",
+        "bbci.co.uk$",
+        "bbc.com$",
+        "huggingface.co$",
+        "nyt.com$",
+        "nytimes.com$",
+        "freeflarum.com$",
+        "thepiratebay.org$",
+        "pornhub.com$",
+        "archive.org$",
+        "rutube.ru$",
+        "youtu.be$",
+        "pximg.net$",
+        "vercel.app$",
+        "nicovideo.jp$",
+        "chrome.com$",
+        "archive-it.org$",
+        "croxy.network$",
+        "proton.me$",
+        "cookielaw.org$",
+        "phncdn.com$",
+        "docker.com$",
+        "discord.gg$",
+        "discordapp.com$",
+        "discord.com$",
+        "blogger.com$",
+        "redd.it$",
+        "redditmedia.com$",
+        "redditstatic.com$",
+        "reddit.com$",
+        "receiveasmsonline.com$",
+        "good.news$",
+        "bsky.app$",
+        "bsky.social$",
+        "pscp.tv$",
+        "matrix.org$",
+        "pixiv.net$",
+        "imgur.com$",
+        "gravatar.com$",
+        "twitch.tv$",
+        "bit.ly$",
+        "duckduckgo.com$",
+        "cdn-telegram.org$",
+        "githubusercontent.com$",
+        "github.io$",
+        "github.com$",
+        "wikinews.org$",
+        "wikipedia.org$",
+        "wikimedia.org$",
+        "instagram.com$",
+        "dropbox.com$",
+        "bu2021.xyz$",
+        "cdninstagram.com$",
+        "fbsbx.com$",
+        "facebook.com$",
+        "fbcdn.net$",
+        "translate.goog$",
+        "ggpht.com$",
+        "telegram.me$",
+        "t.me$",
+        "v2ex.com$",
+        "googleapis.com$",
+        "x.com$",
+        "twimg.com$",
+        "twitter.com$",
+        "withgoogle.com$",
+        "telegram.org$",
+        "youtube.com$",
+        "ytimg.com$",
+        "googlevideo.com$",
+        "googleusercontent.com$",
+        "google.com.hk$",
+        "google.com$",
+        "workers.dev$",
+        "xcancel.com$",
+        "geph.io$",
+        "1lib.sk$",
+        "freeweibo.com$",
+        "odycdn.com$",
+        "odysee.com$",
+        "torproject.org$",
+        "mastodon.social$",
+        "freezhihu.org$",
+        "z-library.sk$",
+        "pages.dev$",
+        "greatfire.org$",
+        "gstatic.com$"
+    ]
+}
+"""
 
 
 class TLSfragment(toga.App):    
@@ -1249,45 +1813,23 @@ class TLSfragment(toga.App):
 
         self.main_box = toga.Box(style=Pack(direction=COLUMN))
 
-
         self.main_window = toga.MainWindow(title=self.formal_name)
         self.main_window.content = self.main_box
         self.main_window.show()
 
         self.BBXserver=toga.Box(style=Pack(direction=COLUMN,flex=1))
-        self.BBXWeb=toga.Box(style=Pack(direction=COLUMN,flex=1))
-        
-        self.BTchgserver=toga.Button('WebView', on_press=self.show_change, style=Pack(padding=5))
-        self.BTchgweb   =toga.Button('Server', on_press=self.show_change, style=Pack(padding=0))
-        self.BBXWeb.add(self.BTchgweb)
-        self.guimode="Server"
-
-        self.BXurl=toga.Box(style=Pack(direction=ROW))
-        self.BXurl.add(self.BTchgweb)
-        self.EDurl=toga.TextInput(readonly=False, style=Pack(flex=1,font_size=18))
-        self.EDurl.placeholder='https://example.com'
-        self.EDurl.value='https://cn.bing.com/ncr'
-        self.BXurl.add(self.EDurl)
-        self.BTurl=toga.Button('Go', on_press=self.go_url, style=Pack(padding=0))
-        self.BXurl.add(self.BTurl)
-
-        self.BBXWeb.add(self.BXurl)
-
-        self.WBview=toga.WebView(style=Pack(flex=1))
-        self.BBXWeb.add(self.WBview)
-        
 
         self.BXopt=toga.Box(style=Pack(direction=ROW))
-        self.BXopt.add(self.BTchgserver)
-        self.BTsaveconfig=toga.Button('Save', on_press=self.save_config, style=Pack(padding=5))
+        self.BTsaveconfig=toga.Button('保存', on_press=self.save_config, style=Pack(padding=5))
         self.BXopt.add(self.BTsaveconfig)
-        self.BTserver=toga.Button('Start', on_press=self.start_proxy, style=Pack(padding=5))
+        self.BTserver=toga.Button('启动', on_press=self.start_proxy, style=Pack(padding=5))
         self.BXopt.add(self.BTserver)
+        
         self.BBXserver.add(self.BXopt)
         self.BXdel=toga.Box(style=Pack(direction=ROW))
-        self.BTdeldnscache=toga.Button('Delete DNS Cache', on_press=self.delete_dns_cache, style=Pack(padding=5))
+        self.BTdeldnscache=toga.Button('删除DNS缓存', on_press=self.delete_dns_cache, style=Pack(padding=5))
         self.BXdel.add(self.BTdeldnscache)
-        self.BTdelttlcache=toga.Button('Delete TTL Cache', on_press=self.delete_ttl_cache, style=Pack(padding=5))
+        self.BTdelttlcache=toga.Button('删除TTL缓存', on_press=self.delete_ttl_cache, style=Pack(padding=5))
         self.BXdel.add(self.BTdelttlcache)
         self.BBXserver.add(self.BXdel)
 
@@ -1304,6 +1846,7 @@ class TLSfragment(toga.App):
                 self.EDconfig.value=f.read()
         except Exception as e:
             print(f'No config file found: {e}')
+            self.EDconfig.value=DefaultConfig
 
     proxythread=None
     def delete_dns_cache(self, widget):
@@ -1327,10 +1870,10 @@ class TLSfragment(toga.App):
     def start_proxy(self, widget):
         global start_server,proxythread
         self.BTserver.enabled=False
-        self.BTserver.text='Starting'
+        self.BTserver.text='正在启动'
         global ThreadtoWork
         proxythread=threading.Thread(target=start_server)
-        self.BTserver.text='Stop'
+        self.BTserver.text='停止'
         self.BTserver.enabled=True
         self.BTdeldnscache.enabled=False
         self.BTdelttlcache.enabled=False
@@ -1341,7 +1884,7 @@ class TLSfragment(toga.App):
         proxythread.start()
     def stop_proxy(self, widget):
         global stop_server,proxythread
-        self.BTserver.text='Stopping'
+        self.BTserver.text='正在停止'
         self.BTserver.enabled=False
         global ThreadtoWork
         ThreadtoWork=False
@@ -1357,7 +1900,7 @@ class TLSfragment(toga.App):
         self.BTdelttlcache.enabled=True
         self.BTsaveconfig.enabled=True
         self.EDconfig.readonly=False
-        self.BTserver.text='Start'
+        self.BTserver.text='启动'
         self.BTserver.enabled=True
         self.BTserver.on_press=self.start_proxy
 
@@ -1368,20 +1911,7 @@ class TLSfragment(toga.App):
             self.paths.data.joinpath('config.json').write_text(self.EDconfig.value)
         except Exception as e:
             print(f'Failed to write config file: {e}')
-    
-    def show_change(self, widget):
-        if self.guimode=='WebView':
-            self.main_box.remove(self.BBXserver)
-            self.main_box.add(self.BBXWeb)
-            self.guimode='Server'
-        else:
-            self.main_box.remove(self.BBXWeb)
-            self.main_box.add(self.BBXserver)
-            self.guimode='WebView'
 
-    def go_url(self, widget):
-        self.WBview.load_url(self.EDurl.value)
-            
 
 
 def main():
