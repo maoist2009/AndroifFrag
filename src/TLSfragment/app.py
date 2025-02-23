@@ -31,6 +31,9 @@ DefaultConfig="""{
     },
     "domains": {
         "annas-archive.org": {},
+        "mastodon.social": {
+            "IP": "146.75.29.91"
+        },
         "codesandbox.io": {
             "IP": "104.21.3.227"
         },
@@ -251,13 +254,13 @@ DefaultConfig="""{
         },
         ".dropbox.com": {},
         "telegram.org": {
-            "IP": "2001:67c:4e8:f004::8"
+            "IP": "149.154.161.145"
         },
         "telegram.me": {
-            "IP": "2001:67c:4e8:f004::8"
+            "IP": "149.154.161.145"
         },
         "t.me": {
-            "IP": "2001:67c:4e8:f004::8",
+            "IP": "149.154.161.145",
             "TLS_frag": 1,
             "num_TCP_fragment": 3,
             "num_TLS_fragment": 5,
@@ -333,8 +336,11 @@ DefaultConfig="""{
         }
     },
     "pac_domains": [
-        "google$",
+        "nadeko.net$",
+        "anoxinon.de$",
         "uptodown.com$",
+        "google$",
+        "freeweibo.com$",
         "fosstodon.org$",
         "smsactivate.s3.eu-central-1.amazonaws.com$",
         "android.com$",
@@ -454,7 +460,6 @@ DefaultConfig="""{
         "xcancel.com$",
         "geph.io$",
         "1lib.sk$",
-        "freeweibo.com$",
         "odycdn.com$",
         "odysee.com$",
         "torproject.org$",
@@ -601,6 +606,8 @@ class Trie:
             if not node.children[index]:
                 return ans
             node = node.children[index]
+        if node.val!=None:
+                ans=node.val
         return ans
 
 ipv4trie=Trie()
@@ -843,16 +850,35 @@ class ThreadedServer(object):
 
     def listen(self):
         self.sock.listen(128)  # up to 128 concurrent unaccepted socket queued , the more is refused untill accepting those.
-        global ThreadtoWork
-        while ThreadtoWork:
-            client_sock , client_addr = self.sock.accept()                    
-            client_sock.settimeout(my_socket_timeout)
-                        
-            time.sleep(accept_time_sleep)   # avoid server crash on flooding request
-            thread_up = threading.Thread(target = self.my_upstream , args =(client_sock,) )
-            thread_up.daemon = True   #avoid memory leak by telling os its belong to main program , its not a separate program , so gc collect it when thread finish
-            thread_up.start()
-        self.sock.close()
+
+        accept_thread = threading.Thread(target=self.accept_connections, args=())
+        accept_thread.start()
+        try:
+            # 主程序逻辑
+            while True:
+                time.sleep(1)  # 主线程的其他操作
+        except KeyboardInterrupt:
+            # 捕获 Ctrl+C
+            print("\nServer shutting down.")
+        finally:
+            #print('-- finally --')
+            ThreadtoWork = False
+            self.sock.close()
+
+    def accept_connections(self):
+        try:
+            global ThreadtoWork
+            while ThreadtoWork:
+                client_sock, client_addr = self.sock.accept()
+                client_sock.settimeout(my_socket_timeout)
+
+                time.sleep(accept_time_sleep)   # avoid server crash on flooding request
+                thread_up = threading.Thread(target = self.my_upstream, args = (client_sock,))
+                thread_up.daemon = True   #avoid memory leak by telling os its belong to main program , its not a separate program , so gc collect it when thread finish
+                thread_up.start()
+            self.sock.close()
+        except Exception as e:
+            print(f'Server error: {e}')
 
     def handle_client_request(self,client_socket):
         # Receive the CONNECT request from the client
@@ -1405,7 +1431,7 @@ def send_fake_data(data_len,fake_data,fake_ttl,real_data,default_ttl,sock,FAKE_s
         );
         """
         import tempfile,uuid
-        file_path = f'tempfile.gettempdir()\\{uuid.uuid4()}.txt'
+        file_path = f'{tempfile.gettempdir()}\\{uuid.uuid4()}.txt'
         try:
             sock_file_descriptor = sock.fileno()
             print("sock file discriptor:",sock_file_descriptor)
@@ -1880,10 +1906,13 @@ class TLSfragment(toga.App):
         self.BTserver.enabled=False
         global ThreadtoWork
         ThreadtoWork=False
-        sock=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(('127.0.0.1',listen_PORT))
-        while(proxythread.is_alive()):
+        try:
+            sock=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect(('127.0.0.1',listen_PORT))
             sock.send(b"EXIT")
+        except:
+            pass
+        while(proxythread.is_alive()):
             pass
         sock.close()
 
